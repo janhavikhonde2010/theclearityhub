@@ -560,6 +560,7 @@ function MessageBroadcastCard({ apiToken, phoneNumberId }: { apiToken: string; p
   const [customMessage, setCustomMessage] = useState("");
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [headerMediaUrl, setHeaderMediaUrl] = useState("");
+  const [videoUrl, setVideoUrl] = useState("");
   const [uploadingMedia, setUploadingMedia] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -569,14 +570,19 @@ function MessageBroadcastCard({ apiToken, phoneNumberId }: { apiToken: string; p
   const [sendResult, setSendResult] = useState<{ total: number; succeeded: number; failed: number; errors: { phone: string; reason: string }[] } | null>(null);
   const [showErrors, setShowErrors] = useState(false);
   const [sending, setSending] = useState(false);
+  const [templateSearch, setTemplateSearch] = useState("");
 
   const activeHeaderType = !useCustom ? (selectedTemplate?.headerType ?? null) : null;
+  const isVideoTemplate = activeHeaderType === "VIDEO";
   const needsMediaHeader = !!activeHeaderType && ["IMAGE", "VIDEO", "DOCUMENT"].includes(activeHeaderType);
   const templateVars = !useCustom && selectedTemplate?.bodyVariables?.length ? selectedTemplate.bodyVariables : [];
+  const hasNameVariable = templateVars.length > 0;
+  const manualVars = hasNameVariable ? templateVars.slice(1) : templateVars;
 
   function resetMediaState() {
     setSelectedFile(null);
     setHeaderMediaUrl("");
+    setVideoUrl("");
     setUploadingMedia(false);
     setUploadError(null);
     if (fileInputRef.current) fileInputRef.current.value = "";
@@ -603,7 +609,7 @@ function MessageBroadcastCard({ apiToken, phoneNumberId }: { apiToken: string; p
     }
   }
 
-  const allVarsFilled = templateVars.length === 0 || (bodyVariableValues.length === templateVars.length && bodyVariableValues.every((v) => !!v.trim()));
+  const allVarsFilled = manualVars.length === 0 || (bodyVariableValues.length === manualVars.length && bodyVariableValues.every((v) => !!v.trim()));
 
   const { data: labelListData, isLoading: loadingLabels } = useGetLabelList(
     { apiToken, phoneNumberId },
@@ -620,12 +626,15 @@ function MessageBroadcastCard({ apiToken, phoneNumberId }: { apiToken: string; p
 
   const { mutate: fetchTemplates, data: templatesData, isPending: loadingTemplates } = useGetTemplateList();
   const templates = templatesData?.templates ?? [];
+  const filteredTemplates = templates.filter((t) => t.name.toLowerCase().includes(templateSearch.toLowerCase()));
 
   useEffect(() => {
     fetchTemplates({ data: { apiToken, phoneNumberId } });
   }, [apiToken, phoneNumberId]);
 
-  const canSend = selectedLabelName && (useCustom ? !!customMessage.trim() : !!selectedTemplate) && (!needsMediaHeader || (!!headerMediaUrl && !uploadingMedia)) && allVarsFilled && !sending;
+  const effectiveMediaUrl = isVideoTemplate ? videoUrl.trim() : headerMediaUrl;
+  const mediaReady = !needsMediaHeader || (isVideoTemplate ? !!videoUrl.trim() : (!!headerMediaUrl && !uploadingMedia));
+  const canSend = selectedLabelName && (useCustom ? !!customMessage.trim() : !!selectedTemplate) && mediaReady && allVarsFilled && !sending;
 
   async function handleSend() {
     if (!canSend) return;
@@ -638,8 +647,13 @@ function MessageBroadcastCard({ apiToken, phoneNumberId }: { apiToken: string; p
         body.message = customMessage.trim();
       } else {
         body.templateId = selectedTemplate!.id;
-        if (headerMediaUrl) body.templateHeaderMediaUrl = headerMediaUrl;
-        if (bodyVariableValues.length > 0) body.bodyVariables = bodyVariableValues;
+        if (effectiveMediaUrl) body.templateHeaderMediaUrl = effectiveMediaUrl;
+        if (hasNameVariable) {
+          body.autoNameVariable = true;
+          if (bodyVariableValues.length > 0) body.bodyVariables = bodyVariableValues;
+        } else if (bodyVariableValues.length > 0) {
+          body.bodyVariables = bodyVariableValues;
+        }
       }
       const resp = await fetch("/api/templates/send-to-label", {
         method: "POST",
@@ -713,36 +727,48 @@ function MessageBroadcastCard({ apiToken, phoneNumberId }: { apiToken: string; p
           {loadingTemplates ? (
             <div className="h-9 bg-gray-100 rounded-lg animate-pulse" />
           ) : (
-            <select
-              value={selectedTemplate?.id ?? ""}
-              onChange={(e) => {
-                if (e.target.value === "__custom__") {
-                  setSelectedTemplate(null);
-                  setUseCustom(true);
-                  resetMediaState();
-                  setBodyVariableValues([]);
-                  setSendResult(null);
-                  setConfirmed(false);
-                } else {
-                  const t = templates.find((t) => t.id === e.target.value) ?? null;
-                  setSelectedTemplate(t);
-                  setUseCustom(false);
-                  resetMediaState();
-                  setBodyVariableValues(t?.bodyVariables?.map(() => "") ?? []);
-                  setSendResult(null);
-                  setConfirmed(false);
-                }
-              }}
-              className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-200"
-            >
-              <option value="">— Select a template —</option>
-              {templates.map((t) => (
-                <option key={t.id} value={t.id}>
-                  {t.headerType === "IMAGE" ? "🖼 " : t.headerType === "VIDEO" ? "🎬 " : t.headerType === "DOCUMENT" ? "📄 " : ""}{t.name}
-                </option>
-              ))}
-              <option value="__custom__">✏️ Custom message…</option>
-            </select>
+            <>
+              <div className="relative mb-1.5">
+                <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
+                <input
+                  type="text"
+                  value={templateSearch}
+                  onChange={(e) => setTemplateSearch(e.target.value)}
+                  placeholder="Search templates…"
+                  className="w-full border border-gray-200 rounded-lg pl-7 pr-3 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-200"
+                />
+              </div>
+              <select
+                value={selectedTemplate?.id ?? ""}
+                onChange={(e) => {
+                  if (e.target.value === "__custom__") {
+                    setSelectedTemplate(null);
+                    setUseCustom(true);
+                    resetMediaState();
+                    setBodyVariableValues([]);
+                    setSendResult(null);
+                    setConfirmed(false);
+                  } else {
+                    const t = templates.find((t) => t.id === e.target.value) ?? null;
+                    setSelectedTemplate(t);
+                    setUseCustom(false);
+                    resetMediaState();
+                    setBodyVariableValues(t?.bodyVariables?.slice(1).map(() => "") ?? []);
+                    setSendResult(null);
+                    setConfirmed(false);
+                  }
+                }}
+                className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-200"
+              >
+                <option value="">— Select a template —</option>
+                {filteredTemplates.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.headerType === "IMAGE" ? "🖼 " : t.headerType === "VIDEO" ? "🎬 " : t.headerType === "DOCUMENT" ? "📄 " : ""}{t.name}
+                  </option>
+                ))}
+                <option value="__custom__">✏️ Custom message…</option>
+              </select>
+            </>
           )}
           {templates.length === 0 && !loadingTemplates && (
             <p className="text-xs text-amber-500 mt-1">No templates found — you can still type a custom message.</p>
@@ -772,83 +798,103 @@ function MessageBroadcastCard({ apiToken, phoneNumberId }: { apiToken: string; p
         </div>
       )}
 
-      {/* Media upload for IMAGE / VIDEO / DOCUMENT header templates */}
+      {/* Media header for IMAGE / VIDEO / DOCUMENT templates */}
       {needsMediaHeader && (
         <div className="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-xl">
           <p className="text-xs font-medium text-amber-800 mb-2">
             {activeHeaderType === "IMAGE" && "🖼 Header Image"}
-            {activeHeaderType === "VIDEO" && "🎬 Header Video"}
+            {activeHeaderType === "VIDEO" && "🎬 Header Video URL"}
             {activeHeaderType === "DOCUMENT" && "📄 Header Document"}
             <span className="text-red-500 ml-1">*</span>
           </p>
 
-          {/* Hidden file input */}
-          <input
-            ref={fileInputRef}
-            type="file"
-            className="hidden"
-            accept={
-              activeHeaderType === "IMAGE" ? "image/jpeg,image/png,image/webp,image/gif" :
-              activeHeaderType === "VIDEO" ? "video/mp4,video/3gpp,video/quicktime" :
-              "application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            }
-            onChange={(e) => {
-              const file = e.target.files?.[0];
-              if (file) handleFileSelect(file);
-            }}
-          />
-
-          {/* Upload area / file status */}
-          {!selectedFile && !uploadingMedia ? (
-            <button
-              type="button"
-              onClick={() => fileInputRef.current?.click()}
-              className="w-full flex flex-col items-center justify-center gap-2 border-2 border-dashed border-amber-300 rounded-xl py-5 px-4 text-amber-700 hover:bg-amber-100 transition-colors cursor-pointer bg-white"
-            >
-              <Upload size={20} />
-              <span className="text-sm font-medium">
-                Click to upload {activeHeaderType === "IMAGE" ? "an image" : activeHeaderType === "VIDEO" ? "a video" : "a document"}
-              </span>
-              <span className="text-xs text-amber-500">
-                {activeHeaderType === "IMAGE" && "JPEG, PNG, WebP, GIF · max 50 MB"}
-                {activeHeaderType === "VIDEO" && "MP4, 3GPP, QuickTime · max 50 MB"}
-                {activeHeaderType === "DOCUMENT" && "PDF, Word, Excel · max 50 MB"}
-              </span>
-            </button>
-          ) : uploadingMedia ? (
-            <div className="flex items-center gap-3 p-3 bg-white border border-amber-200 rounded-xl">
-              <RefreshCw size={16} className="animate-spin text-amber-500 shrink-0" />
-              <div className="flex-1 min-w-0">
-                <p className="text-sm font-medium text-gray-700 truncate">{selectedFile?.name}</p>
-                <p className="text-xs text-amber-600 mt-0.5">Uploading…</p>
+          {/* VIDEO: URL input instead of file upload */}
+          {isVideoTemplate ? (
+            <div>
+              <div className="flex items-center gap-2">
+                <input
+                  type="url"
+                  value={videoUrl}
+                  onChange={(e) => setVideoUrl(e.target.value)}
+                  placeholder="https://…/video.mp4"
+                  className="flex-1 border border-amber-300 rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-amber-200"
+                />
+                {videoUrl.trim() && (
+                  <button type="button" onClick={() => setVideoUrl("")} className="text-gray-400 hover:text-gray-600 shrink-0">
+                    <X size={15} />
+                  </button>
+                )}
               </div>
+              {videoUrl.trim() && (
+                <p className="text-xs text-green-600 mt-1 flex items-center gap-1">
+                  <CheckCircle2 size={10} /> Video URL set — ready to send
+                </p>
+              )}
+              <p className="text-xs text-amber-600 mt-1">Paste the publicly accessible MP4 video URL</p>
             </div>
           ) : (
-            <div className="space-y-2">
-              {/* Image preview */}
-              {selectedFile?.type.startsWith("image/") && (
-                <img src={URL.createObjectURL(selectedFile)} alt="preview" className="w-full max-h-36 object-contain rounded-lg border border-amber-200 bg-white" />
-              )}
-              <div className="flex items-center gap-3 p-3 bg-white border border-amber-200 rounded-xl">
-                <span className="text-xl shrink-0">
-                  {activeHeaderType === "IMAGE" ? "🖼" : activeHeaderType === "VIDEO" ? "🎬" : "📄"}
-                </span>
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium text-gray-700 truncate">{selectedFile?.name}</p>
-                  <p className="text-xs text-green-600 mt-0.5 flex items-center gap-1">
-                    <CheckCircle2 size={10} /> Uploaded — ready to send
-                  </p>
-                </div>
+            <>
+              {/* Hidden file input */}
+              <input
+                ref={fileInputRef}
+                type="file"
+                className="hidden"
+                accept={
+                  activeHeaderType === "IMAGE" ? "image/jpeg,image/png,image/webp,image/gif" :
+                  "application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                }
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (file) handleFileSelect(file);
+                }}
+              />
+
+              {/* Upload area / file status */}
+              {!selectedFile && !uploadingMedia ? (
                 <button
                   type="button"
-                  onClick={resetMediaState}
-                  className="text-gray-400 hover:text-gray-600 shrink-0"
-                  title="Remove file"
+                  onClick={() => fileInputRef.current?.click()}
+                  className="w-full flex flex-col items-center justify-center gap-2 border-2 border-dashed border-amber-300 rounded-xl py-5 px-4 text-amber-700 hover:bg-amber-100 transition-colors cursor-pointer bg-white"
                 >
-                  <X size={15} />
+                  <Upload size={20} />
+                  <span className="text-sm font-medium">
+                    Click to upload {activeHeaderType === "IMAGE" ? "an image" : "a document"}
+                  </span>
+                  <span className="text-xs text-amber-500">
+                    {activeHeaderType === "IMAGE" && "JPEG, PNG, WebP, GIF · max 50 MB"}
+                    {activeHeaderType === "DOCUMENT" && "PDF, Word, Excel · max 50 MB"}
+                  </span>
                 </button>
-              </div>
-            </div>
+              ) : uploadingMedia ? (
+                <div className="flex items-center gap-3 p-3 bg-white border border-amber-200 rounded-xl">
+                  <RefreshCw size={16} className="animate-spin text-amber-500 shrink-0" />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium text-gray-700 truncate">{selectedFile?.name}</p>
+                    <p className="text-xs text-amber-600 mt-0.5">Uploading…</p>
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {selectedFile?.type.startsWith("image/") && (
+                    <img src={URL.createObjectURL(selectedFile)} alt="preview" className="w-full max-h-36 object-contain rounded-lg border border-amber-200 bg-white" />
+                  )}
+                  <div className="flex items-center gap-3 p-3 bg-white border border-amber-200 rounded-xl">
+                    <span className="text-xl shrink-0">
+                      {activeHeaderType === "IMAGE" ? "🖼" : "📄"}
+                    </span>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium text-gray-700 truncate">{selectedFile?.name}</p>
+                      <p className="text-xs text-green-600 mt-0.5 flex items-center gap-1">
+                        <CheckCircle2 size={10} /> Uploaded — ready to send
+                      </p>
+                    </div>
+                    <button type="button" onClick={resetMediaState} className="text-gray-400 hover:text-gray-600 shrink-0" title="Remove file">
+                      <X size={15} />
+                    </button>
+                  </div>
+                </div>
+              )}
+            </>
           )}
 
           {/* Upload error */}
@@ -865,7 +911,16 @@ function MessageBroadcastCard({ apiToken, phoneNumberId }: { apiToken: string; p
         <div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-xl">
           <p className="text-xs font-medium text-blue-800 mb-2">Template Variables <span className="text-red-500">*</span></p>
           <div className="space-y-2">
-            {templateVars.map((placeholder, idx) => (
+            {/* {{1}} — auto-filled from subscriber name */}
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-mono text-blue-600 bg-blue-100 rounded px-2 py-1 whitespace-nowrap">{templateVars[0]}</span>
+              <div className="flex-1 flex items-center gap-2 border border-green-300 rounded-lg px-3 py-1.5 bg-green-50">
+                <span className="text-xs text-green-700 font-medium">Auto — subscriber name from label</span>
+                <span className="ml-auto text-green-500"><CheckCircle2 size={12} /></span>
+              </div>
+            </div>
+            {/* Remaining variables — manual input */}
+            {manualVars.map((placeholder, idx) => (
               <div key={placeholder} className="flex items-center gap-2">
                 <span className="text-xs font-mono text-blue-600 bg-blue-100 rounded px-2 py-1 whitespace-nowrap">{placeholder}</span>
                 <input
@@ -882,7 +937,9 @@ function MessageBroadcastCard({ apiToken, phoneNumberId }: { apiToken: string; p
               </div>
             ))}
           </div>
-          <p className="text-xs text-blue-600 mt-2">Fill in all variables — they will be replaced in the message for every recipient.</p>
+          <p className="text-xs text-blue-600 mt-2">
+            {hasNameVariable ? "{{1}} is filled automatically per subscriber. Fill any remaining variables below." : "Fill in all variables — they will be replaced in the message for every recipient."}
+          </p>
         </div>
       )}
 
@@ -1254,8 +1311,8 @@ function DashboardContent() {
         subtitle="Label breakdown and reply volume" color={ORANGE}
         onDownload={() => labelsData && downloadCSV("label-distribution.csv", labelsData.labels)}>
         <LabelManagementCard apiToken={credentials!.apiToken} phoneNumberId={credentials!.phoneNumberId} />
-        <MessageBroadcastCard apiToken={credentials!.apiToken} phoneNumberId={credentials!.phoneNumberId} />
         <LabelAgentAssignCard apiToken={credentials!.apiToken} phoneNumberId={credentials!.phoneNumberId} />
+        <MessageBroadcastCard apiToken={credentials!.apiToken} phoneNumberId={credentials!.phoneNumberId} />
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
           <ChartCard title="Reply Volume" subtitle="User vs TWP messages">
             <div className="h-[230px]">

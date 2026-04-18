@@ -681,7 +681,7 @@ router.post("/agents/assign-to-label", async (req, res): Promise<void> => {
 });
 
 router.post("/templates/send-to-label", async (req, res): Promise<void> => {
-  const { apiToken, phoneNumberId, labelName, templateId, message, templateHeaderMediaUrl, bodyVariables } = req.body as {
+  const { apiToken, phoneNumberId, labelName, templateId, message, templateHeaderMediaUrl, bodyVariables, autoNameVariable } = req.body as {
     apiToken?: string;
     phoneNumberId?: string;
     labelName?: string;
@@ -689,6 +689,7 @@ router.post("/templates/send-to-label", async (req, res): Promise<void> => {
     message?: string;
     templateHeaderMediaUrl?: string;
     bodyVariables?: string[];
+    autoNameVariable?: boolean;
   };
 
   if (!apiToken || !phoneNumberId || !labelName?.trim()) {
@@ -738,7 +739,12 @@ router.post("/templates/send-to-label", async (req, res): Promise<void> => {
           if (templateHeaderMediaUrl?.trim()) {
             sendParams.set("template_header_media_url", templateHeaderMediaUrl.trim());
           }
-          if (Array.isArray(bodyVariables)) {
+          if (autoNameVariable) {
+            sendParams.set("body_variable_1", sub.name || sub.phoneNumber);
+            if (Array.isArray(bodyVariables)) {
+              bodyVariables.forEach((val, idx) => sendParams.set(`body_variable_${idx + 2}`, val ?? ""));
+            }
+          } else if (Array.isArray(bodyVariables)) {
             bodyVariables.forEach((val, idx) => sendParams.set(`body_variable_${idx + 1}`, val ?? ""));
           }
           r = await fetch(
