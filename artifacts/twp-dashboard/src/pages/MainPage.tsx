@@ -632,8 +632,8 @@ function MessageBroadcastCard({ apiToken, phoneNumberId }: { apiToken: string; p
     fetchTemplates({ data: { apiToken, phoneNumberId } });
   }, [apiToken, phoneNumberId]);
 
-  const effectiveMediaUrl = isVideoTemplate ? videoUrl.trim() : headerMediaUrl;
-  const mediaReady = !needsMediaHeader || (isVideoTemplate ? !!videoUrl.trim() : (!!headerMediaUrl && !uploadingMedia));
+  const effectiveMediaUrl = headerMediaUrl;
+  const mediaReady = !needsMediaHeader || (!!headerMediaUrl && !uploadingMedia);
   const canSend = selectedLabelName && (useCustom ? !!customMessage.trim() : !!selectedTemplate) && mediaReady && allVarsFilled && !sending;
 
   async function handleSend() {
@@ -808,93 +808,67 @@ function MessageBroadcastCard({ apiToken, phoneNumberId }: { apiToken: string; p
             <span className="text-red-500 ml-1">*</span>
           </p>
 
-          {/* VIDEO: URL input instead of file upload */}
-          {isVideoTemplate ? (
-            <div>
-              <div className="flex items-center gap-2">
-                <input
-                  type="url"
-                  value={videoUrl}
-                  onChange={(e) => setVideoUrl(e.target.value)}
-                  placeholder="https://…/video.mp4"
-                  className="flex-1 border border-amber-300 rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-amber-200"
-                />
-                {videoUrl.trim() && (
-                  <button type="button" onClick={() => setVideoUrl("")} className="text-gray-400 hover:text-gray-600 shrink-0">
-                    <X size={15} />
-                  </button>
-                )}
+          {/* Hidden file input */}
+          <input
+            ref={fileInputRef}
+            type="file"
+            className="hidden"
+            accept={
+              activeHeaderType === "IMAGE" ? "image/jpeg,image/png,image/webp,image/gif" :
+              activeHeaderType === "VIDEO" ? "video/mp4,video/3gpp,video/quicktime" :
+              "application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            }
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (file) handleFileSelect(file);
+            }}
+          />
+
+          {/* Upload area / file status */}
+          {!selectedFile && !uploadingMedia ? (
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              className="w-full flex flex-col items-center justify-center gap-2 border-2 border-dashed border-amber-300 rounded-xl py-5 px-4 text-amber-700 hover:bg-amber-100 transition-colors cursor-pointer bg-white"
+            >
+              <Upload size={20} />
+              <span className="text-sm font-medium">
+                Click to upload {activeHeaderType === "IMAGE" ? "an image" : activeHeaderType === "VIDEO" ? "a video" : "a document"}
+              </span>
+              <span className="text-xs text-amber-500">
+                {activeHeaderType === "IMAGE" && "JPEG, PNG, WebP, GIF · max 50 MB"}
+                {activeHeaderType === "VIDEO" && "MP4, 3GPP, QuickTime · max 50 MB"}
+                {activeHeaderType === "DOCUMENT" && "PDF, Word, Excel · max 50 MB"}
+              </span>
+            </button>
+          ) : uploadingMedia ? (
+            <div className="flex items-center gap-3 p-3 bg-white border border-amber-200 rounded-xl">
+              <RefreshCw size={16} className="animate-spin text-amber-500 shrink-0" />
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium text-gray-700 truncate">{selectedFile?.name}</p>
+                <p className="text-xs text-amber-600 mt-0.5">Uploading…</p>
               </div>
-              {videoUrl.trim() && (
-                <p className="text-xs text-green-600 mt-1 flex items-center gap-1">
-                  <CheckCircle2 size={10} /> Video URL set — ready to send
-                </p>
-              )}
-              <p className="text-xs text-amber-600 mt-1">Paste the publicly accessible MP4 video URL</p>
             </div>
           ) : (
-            <>
-              {/* Hidden file input */}
-              <input
-                ref={fileInputRef}
-                type="file"
-                className="hidden"
-                accept={
-                  activeHeaderType === "IMAGE" ? "image/jpeg,image/png,image/webp,image/gif" :
-                  "application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                }
-                onChange={(e) => {
-                  const file = e.target.files?.[0];
-                  if (file) handleFileSelect(file);
-                }}
-              />
-
-              {/* Upload area / file status */}
-              {!selectedFile && !uploadingMedia ? (
-                <button
-                  type="button"
-                  onClick={() => fileInputRef.current?.click()}
-                  className="w-full flex flex-col items-center justify-center gap-2 border-2 border-dashed border-amber-300 rounded-xl py-5 px-4 text-amber-700 hover:bg-amber-100 transition-colors cursor-pointer bg-white"
-                >
-                  <Upload size={20} />
-                  <span className="text-sm font-medium">
-                    Click to upload {activeHeaderType === "IMAGE" ? "an image" : "a document"}
-                  </span>
-                  <span className="text-xs text-amber-500">
-                    {activeHeaderType === "IMAGE" && "JPEG, PNG, WebP, GIF · max 50 MB"}
-                    {activeHeaderType === "DOCUMENT" && "PDF, Word, Excel · max 50 MB"}
-                  </span>
-                </button>
-              ) : uploadingMedia ? (
-                <div className="flex items-center gap-3 p-3 bg-white border border-amber-200 rounded-xl">
-                  <RefreshCw size={16} className="animate-spin text-amber-500 shrink-0" />
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium text-gray-700 truncate">{selectedFile?.name}</p>
-                    <p className="text-xs text-amber-600 mt-0.5">Uploading…</p>
-                  </div>
-                </div>
-              ) : (
-                <div className="space-y-2">
-                  {selectedFile?.type.startsWith("image/") && (
-                    <img src={URL.createObjectURL(selectedFile)} alt="preview" className="w-full max-h-36 object-contain rounded-lg border border-amber-200 bg-white" />
-                  )}
-                  <div className="flex items-center gap-3 p-3 bg-white border border-amber-200 rounded-xl">
-                    <span className="text-xl shrink-0">
-                      {activeHeaderType === "IMAGE" ? "🖼" : "📄"}
-                    </span>
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm font-medium text-gray-700 truncate">{selectedFile?.name}</p>
-                      <p className="text-xs text-green-600 mt-0.5 flex items-center gap-1">
-                        <CheckCircle2 size={10} /> Uploaded — ready to send
-                      </p>
-                    </div>
-                    <button type="button" onClick={resetMediaState} className="text-gray-400 hover:text-gray-600 shrink-0" title="Remove file">
-                      <X size={15} />
-                    </button>
-                  </div>
-                </div>
+            <div className="space-y-2">
+              {selectedFile?.type.startsWith("image/") && (
+                <img src={URL.createObjectURL(selectedFile)} alt="preview" className="w-full max-h-36 object-contain rounded-lg border border-amber-200 bg-white" />
               )}
-            </>
+              <div className="flex items-center gap-3 p-3 bg-white border border-amber-200 rounded-xl">
+                <span className="text-xl shrink-0">
+                  {activeHeaderType === "IMAGE" ? "🖼" : activeHeaderType === "VIDEO" ? "🎬" : "📄"}
+                </span>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium text-gray-700 truncate">{selectedFile?.name}</p>
+                  <p className="text-xs text-green-600 mt-0.5 flex items-center gap-1">
+                    <CheckCircle2 size={10} /> Uploaded — ready to send
+                  </p>
+                </div>
+                <button type="button" onClick={resetMediaState} className="text-gray-400 hover:text-gray-600 shrink-0" title="Remove file">
+                  <X size={15} />
+                </button>
+              </div>
+            </div>
           )}
 
           {/* Upload error */}
