@@ -747,6 +747,7 @@ router.post("/templates/send-to-label", async (req, res): Promise<void> => {
           } else if (Array.isArray(bodyVariables)) {
             bodyVariables.forEach((val, idx) => sendParams.set(`body_variable_${idx + 1}`, val ?? ""));
           }
+          logger.info({ phone: sub.phoneNumber, params: Object.fromEntries(sendParams) }, "send-to-label: sending template to TWP");
           r = await fetch(
             "https://growth.thewiseparrot.club/api/v1/whatsapp/send/template",
             { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: sendParams.toString(), signal: AbortSignal.timeout(15_000) }
@@ -766,6 +767,7 @@ router.post("/templates/send-to-label", async (req, res): Promise<void> => {
           rawResp = await r.json() as { status?: string; message?: string };
         }
 
+        logger.info({ phone: sub.phoneNumber, httpStatus: r.status, twpResponse: rawResp }, "send-to-label: TWP response");
         if (r.ok && rawResp.status === "1") {
           succeeded++;
         } else {
@@ -773,6 +775,7 @@ router.post("/templates/send-to-label", async (req, res): Promise<void> => {
           errors.push({ phone: sub.phoneNumber, reason: rawResp.message ?? `HTTP ${r.status}` });
         }
       } catch (err) {
+        logger.error({ phone: sub.phoneNumber, err }, "send-to-label: exception during send");
         errors.push({ phone: sub.phoneNumber, reason: err instanceof Error ? err.message : "Unknown error" });
       }
     }));
