@@ -570,6 +570,7 @@ function MessageBroadcastCard({ apiToken, phoneNumberId }: { apiToken: string; p
   const [sendResult, setSendResult] = useState<{ total: number; succeeded: number; failed: number; errors: { phone: string; reason: string }[] } | null>(null);
   const [showErrors, setShowErrors] = useState(false);
   const [sending, setSending] = useState(false);
+  const [sendingStatus, setSendingStatus] = useState<string>("Sending…");
   const [templateSearch, setTemplateSearch] = useState("");
 
   const activeHeaderType = !useCustom ? (selectedTemplate?.headerType ?? null) : null;
@@ -641,6 +642,7 @@ function MessageBroadcastCard({ apiToken, phoneNumberId }: { apiToken: string; p
     setSendResult(null);
     setShowErrors(false);
     setSending(true);
+    setSendingStatus("Queuing broadcast…");
     try {
       const body: Record<string, unknown> = { apiToken, phoneNumberId, labelName: selectedLabelName };
       if (useCustom) {
@@ -660,9 +662,47 @@ function MessageBroadcastCard({ apiToken, phoneNumberId }: { apiToken: string; p
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
-      const data = await resp.json() as { total: number; succeeded: number; failed: number; errors: { phone: string; reason: string }[] };
-      setSendResult(data);
-      setConfirmed(false);
+      const initial = await resp.json() as
+        | { jobId: string; status: string }
+        | { total: number; succeeded: number; failed: number; errors: { phone: string; reason: string }[] };
+
+      // New background-job response
+      if ("jobId" in initial) {
+        const { jobId } = initial;
+        setSendingStatus("Sending messages…");
+        // Poll until done
+        await new Promise<void>((resolve) => {
+          const interval = setInterval(async () => {
+            try {
+              const pollResp = await fetch(`/api/templates/send-job/${jobId}`);
+              const job = await pollResp.json() as
+                | { status: "pending" | "running"; startedAt?: number }
+                | { status: "done"; total: number; succeeded: number; failed: number; errors: { phone: string; reason: string }[] }
+                | { status: "error"; message: string };
+
+              if (job.status === "done") {
+                clearInterval(interval);
+                setSendResult({ total: job.total, succeeded: job.succeeded, failed: job.failed, errors: job.errors });
+                setConfirmed(false);
+                resolve();
+              } else if (job.status === "error") {
+                clearInterval(interval);
+                setSendResult({ total: 0, succeeded: 0, failed: 0, errors: [{ phone: "-", reason: job.message }] });
+                setConfirmed(false);
+                resolve();
+              } else if (job.status === "running") {
+                setSendingStatus("Sending messages…");
+              }
+            } catch {
+              // Keep polling on transient errors
+            }
+          }, 2000);
+        });
+      } else {
+        // Legacy direct response (cache-warm fast path)
+        setSendResult(initial);
+        setConfirmed(false);
+      }
     } catch {
       setSendResult({ total: 0, succeeded: 0, failed: 0, errors: [{ phone: "-", reason: "Network error — please try again" }] });
     } finally {
@@ -958,7 +998,7 @@ function MessageBroadcastCard({ apiToken, phoneNumberId }: { apiToken: string; p
                 style={{ background: "#16A34A" }}
               >
                 {sending ? <RefreshCw size={12} className="animate-spin" /> : <CheckCircle2 size={14} />}
-                {sending ? "Sending…" : "Confirm"}
+                {sending ? sendingStatus : "Confirm"}
               </button>
               <button
                 onClick={() => setConfirmed(false)}

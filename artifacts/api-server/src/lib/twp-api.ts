@@ -230,7 +230,7 @@ export async function fetchAccountInfo(
 export async function fetchSubscribers(apiToken: string, phoneNumberId: string): Promise<RawSubscriber[]> {
   const url = `${TWP_BASE}/subscriber/list?apiToken=${encodeURIComponent(apiToken)}&phone_number_id=${encodeURIComponent(phoneNumberId)}&limit=10000`;
   logger.info({ url: url.split("?")[0] }, "Fetching subscribers");
-  const res = await fetch(url, { signal: AbortSignal.timeout(20_000) });
+  const res = await fetch(url, { signal: AbortSignal.timeout(90_000) });
   if (!res.ok) {
     logger.error({ status: res.status }, "Failed to fetch subscribers");
     if (res.status === 401 || res.status === 403) {

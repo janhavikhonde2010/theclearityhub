@@ -26,6 +26,27 @@ function invalidateCache(apiToken: string, phoneNumberId: string): void {
   inflight.delete(key);
 }
 
+// Background send-job store
+type SendJobState =
+  | { status: "pending" }
+  | { status: "running"; startedAt: number }
+  | { status: "done"; total: number; succeeded: number; failed: number; errors: { phone: string; reason: string }[] }
+  | { status: "error"; message: string };
+
+const sendJobs = new Map<string, SendJobState>();
+
+// Clean up completed jobs after 10 minutes
+setInterval(() => {
+  const now = Date.now();
+  for (const [id, job] of sendJobs.entries()) {
+    if (job.status === "done" || job.status === "error") {
+      // Use job id prefix as timestamp
+      const ts = parseInt(id.split("-")[0], 10);
+      if (!isNaN(ts) && now - ts > 10 * 60 * 1000) sendJobs.delete(id);
+    }
+  }
+}, 60_000);
+
 async function getProcessedSubscribers(apiToken: string, phoneNumberId: string): Promise<ProcessedSubscriber[]> {
   const key = `${apiToken}:${phoneNumberId}`;
 
@@ -680,7 +701,7 @@ router.post("/agents/assign-to-label", async (req, res): Promise<void> => {
   res.json({ total: target.length, succeeded, failed: errors.length, errors });
 });
 
-router.post("/templates/send-to-label", async (req, res): Promise<void> => {
+router.post("/templates/send-to-label", (req, res): void => {
   const { apiToken, phoneNumberId, labelName, templateId, message, templateHeaderMediaUrl, bodyVariables, autoNameVariable } = req.body as {
     apiToken?: string;
     phoneNumberId?: string;
@@ -705,83 +726,110 @@ router.post("/templates/send-to-label", async (req, res): Promise<void> => {
     return;
   }
 
-  const allSubscribers = await getProcessedSubscribers(apiToken, phoneNumberId);
-  const targetLabel = labelName.trim();
-  const targets = allSubscribers.filter((s) =>
-    s.allLabelNames.some((l) => l === targetLabel) || s.labelName === targetLabel
-  );
+  // Generate a job ID and respond immediately — actual work runs in background
+  const jobId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  sendJobs.set(jobId, { status: "pending" });
+  res.json({ jobId, status: "started" });
 
-  logger.info({ targetLabel, totalSubscribers: allSubscribers.length, matched: targets.length, hasMediaUrl: !!templateHeaderMediaUrl }, "send-to-label: matched subscribers");
+  // Background processing — not bound to the HTTP request lifecycle
+  void (async () => {
+    sendJobs.set(jobId, { status: "running", startedAt: Date.now() });
+    try {
+      const allSubscribers = await getProcessedSubscribers(apiToken, phoneNumberId);
+      const targetLabel = labelName.trim();
+      const targets = allSubscribers.filter((s) =>
+        s.allLabelNames.some((l) => l === targetLabel) || s.labelName === targetLabel
+      );
 
-  if (targets.length === 0) {
-    res.json({ total: 0, succeeded: 0, failed: 0, errors: [] });
+      logger.info({ jobId, targetLabel, totalSubscribers: allSubscribers.length, matched: targets.length, hasMediaUrl: !!templateHeaderMediaUrl }, "send-to-label: matched subscribers");
+
+      if (targets.length === 0) {
+        sendJobs.set(jobId, { status: "done", total: 0, succeeded: 0, failed: 0, errors: [] });
+        return;
+      }
+
+      const errors: { phone: string; reason: string }[] = [];
+      let succeeded = 0;
+
+      const BATCH = 5;
+      for (let i = 0; i < targets.length; i += BATCH) {
+        const batch = targets.slice(i, i + BATCH);
+        await Promise.all(batch.map(async (sub) => {
+          try {
+            let r: Response;
+            let rawResp: { status?: string; message?: string };
+
+            if (usingTemplate) {
+              const sendParams = new URLSearchParams({
+                apiToken,
+                phone_number_id: phoneNumberId,
+                template_id: templateId!.trim(),
+                phone_number: sub.phoneNumber,
+              });
+              if (templateHeaderMediaUrl?.trim()) {
+                sendParams.set("template_header_media_url", templateHeaderMediaUrl.trim());
+              }
+              if (autoNameVariable) {
+                sendParams.set("body_variable_1", sub.name || sub.phoneNumber);
+                if (Array.isArray(bodyVariables)) {
+                  bodyVariables.forEach((val, idx) => sendParams.set(`body_variable_${idx + 2}`, val ?? ""));
+                }
+              } else if (Array.isArray(bodyVariables)) {
+                bodyVariables.forEach((val, idx) => sendParams.set(`body_variable_${idx + 1}`, val ?? ""));
+              }
+              logger.info({ jobId, phone: sub.phoneNumber, params: Object.fromEntries(sendParams) }, "send-to-label: sending template to TWP");
+              r = await fetch(
+                "https://growth.thewiseparrot.club/api/v1/whatsapp/send/template",
+                { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: sendParams.toString(), signal: AbortSignal.timeout(15_000) }
+              );
+              rawResp = await r.json() as { status?: string; message?: string };
+            } else {
+              const sendParams = new URLSearchParams({
+                apiToken,
+                phone_number_id: phoneNumberId,
+                message: message!.trim(),
+                phone_number: sub.phoneNumber,
+              });
+              r = await fetch(
+                "https://growth.thewiseparrot.club/api/v1/whatsapp/send",
+                { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: sendParams.toString(), signal: AbortSignal.timeout(10_000) }
+              );
+              rawResp = await r.json() as { status?: string; message?: string };
+            }
+
+            logger.info({ jobId, phone: sub.phoneNumber, httpStatus: r.status, twpResponse: rawResp }, "send-to-label: TWP response");
+            if (r.ok && rawResp.status === "1") {
+              succeeded++;
+            } else {
+              logger.warn({ jobId, phone: sub.phoneNumber, httpStatus: r.status, twpResponse: rawResp }, "send-to-label: TWP send failed");
+              errors.push({ phone: sub.phoneNumber, reason: rawResp.message ?? `HTTP ${r.status}` });
+            }
+          } catch (err) {
+            logger.error({ jobId, phone: sub.phoneNumber, err }, "send-to-label: exception during send");
+            errors.push({ phone: sub.phoneNumber, reason: err instanceof Error ? err.message : "Unknown error" });
+          }
+        }));
+      }
+
+      sendJobs.set(jobId, { status: "done", total: targets.length, succeeded, failed: errors.length, errors });
+      logger.info({ jobId, total: targets.length, succeeded, failed: errors.length }, "send-to-label: job complete");
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Unknown error";
+      logger.error({ jobId, err }, "send-to-label: background job failed");
+      sendJobs.set(jobId, { status: "error", message: msg });
+    }
+  })();
+});
+
+// Polling endpoint for background send jobs
+router.get("/templates/send-job/:jobId", (req, res): void => {
+  const { jobId } = req.params;
+  const job = sendJobs.get(jobId);
+  if (!job) {
+    res.status(404).json({ error: "Job not found" });
     return;
   }
-
-  const errors: { phone: string; reason: string }[] = [];
-  let succeeded = 0;
-
-  const BATCH = 5;
-  for (let i = 0; i < targets.length; i += BATCH) {
-    const batch = targets.slice(i, i + BATCH);
-    await Promise.all(batch.map(async (sub) => {
-      try {
-        let r: Response;
-        let rawResp: { status?: string; message?: string };
-
-        if (usingTemplate) {
-          const sendParams = new URLSearchParams({
-            apiToken,
-            phone_number_id: phoneNumberId,
-            template_id: templateId!.trim(),
-            phone_number: sub.phoneNumber,
-          });
-          if (templateHeaderMediaUrl?.trim()) {
-            sendParams.set("template_header_media_url", templateHeaderMediaUrl.trim());
-          }
-          if (autoNameVariable) {
-            sendParams.set("body_variable_1", sub.name || sub.phoneNumber);
-            if (Array.isArray(bodyVariables)) {
-              bodyVariables.forEach((val, idx) => sendParams.set(`body_variable_${idx + 2}`, val ?? ""));
-            }
-          } else if (Array.isArray(bodyVariables)) {
-            bodyVariables.forEach((val, idx) => sendParams.set(`body_variable_${idx + 1}`, val ?? ""));
-          }
-          logger.info({ phone: sub.phoneNumber, params: Object.fromEntries(sendParams) }, "send-to-label: sending template to TWP");
-          r = await fetch(
-            "https://growth.thewiseparrot.club/api/v1/whatsapp/send/template",
-            { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: sendParams.toString(), signal: AbortSignal.timeout(15_000) }
-          );
-          rawResp = await r.json() as { status?: string; message?: string };
-        } else {
-          const sendParams = new URLSearchParams({
-            apiToken,
-            phone_number_id: phoneNumberId,
-            message: message!.trim(),
-            phone_number: sub.phoneNumber,
-          });
-          r = await fetch(
-            "https://growth.thewiseparrot.club/api/v1/whatsapp/send",
-            { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: sendParams.toString(), signal: AbortSignal.timeout(10_000) }
-          );
-          rawResp = await r.json() as { status?: string; message?: string };
-        }
-
-        logger.info({ phone: sub.phoneNumber, httpStatus: r.status, twpResponse: rawResp }, "send-to-label: TWP response");
-        if (r.ok && rawResp.status === "1") {
-          succeeded++;
-        } else {
-          logger.warn({ phone: sub.phoneNumber, httpStatus: r.status, twpResponse: rawResp }, "send-to-label: TWP send failed");
-          errors.push({ phone: sub.phoneNumber, reason: rawResp.message ?? `HTTP ${r.status}` });
-        }
-      } catch (err) {
-        logger.error({ phone: sub.phoneNumber, err }, "send-to-label: exception during send");
-        errors.push({ phone: sub.phoneNumber, reason: err instanceof Error ? err.message : "Unknown error" });
-      }
-    }));
-  }
-
-  res.json({ total: targets.length, succeeded, failed: errors.length, errors });
+  res.json(job);
 });
 
 export default router;
