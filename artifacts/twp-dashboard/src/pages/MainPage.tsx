@@ -195,7 +195,7 @@ export default function MainPage() {
 
 /* ═══════════════ LABEL MANAGEMENT CARD ═══════════════ */
 function LabelManagementCard({ apiToken, phoneNumberId }: { apiToken: string; phoneNumberId: string }) {
-  const [tab, setTab] = useState<"create" | "assign">("create");
+  const [tab, setTab] = useState<"create" | "assign" | "broadcast">("create");
   const [assignMode, setAssignMode] = useState<"single" | "bulk">("single");
 
   // ─── Create Label state ───
@@ -224,7 +224,7 @@ function LabelManagementCard({ apiToken, phoneNumberId }: { apiToken: string; ph
   // ─── Shared label list ───
   const { data: labelListData, isLoading: loadingLabels } = useGetLabelList(
     { apiToken, phoneNumberId },
-    { query: { enabled: tab === "assign", retry: 0 } }
+    { query: { enabled: tab === "assign" || tab === "broadcast", retry: 0 } }
   );
   const labelList = labelListData?.labels ?? [];
 
@@ -331,19 +331,19 @@ function LabelManagementCard({ apiToken, phoneNumberId }: { apiToken: string; ph
     <div className="rounded-2xl border mb-5 overflow-hidden" style={{ background: "#fff", borderColor: BORDER }}>
       {/* Main tab bar */}
       <div className="flex border-b" style={{ borderColor: BORDER }}>
-        {(["create", "assign"] as const).map((t) => {
+        {(["create", "assign", "broadcast"] as const).map((t) => {
           const active = tab === t;
           return (
             <button key={t} onClick={() => setTab(t)}
               className="flex items-center gap-2 px-5 py-3.5 text-sm font-semibold transition-colors"
               style={{ color: active ? ORANGE_D : GRAY, borderBottom: active ? `2px solid ${ORANGE}` : "2px solid transparent", background: active ? "#FFFBF5" : "transparent" }}>
-              {t === "create" ? <><Plus className="w-3.5 h-3.5" />Create Label</> : <><Users className="w-3.5 h-3.5" />Assign Subscriber</>}
+              {t === "create" ? <><Plus className="w-3.5 h-3.5" />Create Label</> : t === "assign" ? <><Users className="w-3.5 h-3.5" />Assign Subscriber</> : <><Send className="w-3.5 h-3.5" />Message Distribution</>}
             </button>
           );
         })}
       </div>
 
-      <div className="p-5">
+      {tab !== "broadcast" && <div className="p-5">
         {tab === "create" ? (
           <>
             <p className="text-xs mb-3" style={{ color: GRAY }}>Add a new pipeline stage label to your WhatsApp account.</p>
@@ -548,13 +548,14 @@ function LabelManagementCard({ apiToken, phoneNumberId }: { apiToken: string; ph
             )}
           </>
         )}
-      </div>
+      </div>}
+      {tab === "broadcast" && <MessageBroadcastCard apiToken={apiToken} phoneNumberId={phoneNumberId} asTab />}
     </div>
   );
 }
 
 /* ═══════════════ MESSAGE BROADCAST CARD ═══════════════ */
-function MessageBroadcastCard({ apiToken, phoneNumberId }: { apiToken: string; phoneNumberId: string }) {
+function MessageBroadcastCard({ apiToken, phoneNumberId, asTab }: { apiToken: string; phoneNumberId: string; asTab?: boolean }) {
   const [selectedLabelName, setSelectedLabelName] = useState("");
   const [selectedTemplate, setSelectedTemplate] = useState<{ id: string; name: string; message: string; headerType?: string | null; bodyVariables?: string[] } | null>(null);
   const [customMessage, setCustomMessage] = useState("");
@@ -706,9 +707,9 @@ function MessageBroadcastCard({ apiToken, phoneNumberId }: { apiToken: string; p
     }
   }
 
-  return (
-    <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6 mb-6">
-      <div className="flex items-center gap-3 mb-5">
+  const inner = (
+    <div className={asTab ? "p-5" : ""}>
+      {!asTab && <div className="flex items-center gap-3 mb-5">
         <div className="w-10 h-10 rounded-xl flex items-center justify-center" style={{ background: "#F0FDF4" }}>
           <Send size={18} style={{ color: "#16A34A" }} />
         </div>
@@ -724,7 +725,18 @@ function MessageBroadcastCard({ apiToken, phoneNumberId }: { apiToken: string; p
           <RefreshCw size={12} className={loadingTemplates ? "animate-spin" : ""} />
           Refresh
         </button>
-      </div>
+      </div>}
+      {asTab && <div className="flex items-center justify-between mb-4">
+        <p className="text-xs text-gray-500">Broadcast a template or custom message to all subscribers in a label.</p>
+        <button
+          onClick={() => fetchTemplates({ data: { apiToken, phoneNumberId } })}
+          disabled={loadingTemplates}
+          className="text-xs text-blue-600 hover:text-blue-800 flex items-center gap-1 disabled:opacity-50"
+        >
+          <RefreshCw size={12} className={loadingTemplates ? "animate-spin" : ""} />
+          Refresh templates
+        </button>
+      </div>}
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
         {/* Label select */}
@@ -735,7 +747,7 @@ function MessageBroadcastCard({ apiToken, phoneNumberId }: { apiToken: string; p
           ) : (
             <select
               value={selectedLabelName}
-              onChange={(e) => { setSelectedLabelName(e.target.value); setSendResult(null); setConfirmed(false); resetMediaState(); setBodyVariableValues([]); }}
+              onChange={(e) => { setSelectedLabelName(e.target.value); setSendResult(null); setConfirmed(false); resetMediaState(); setVariableMappings([]); }}
               className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-200"
             >
               <option value="">— Select a label —</option>
@@ -781,7 +793,7 @@ function MessageBroadcastCard({ apiToken, phoneNumberId }: { apiToken: string; p
                     setSelectedTemplate(null);
                     setUseCustom(true);
                     resetMediaState();
-                    setBodyVariableValues([]);
+                    setVariableMappings([]);
                     setSendResult(null);
                     setConfirmed(false);
                   } else {
@@ -1084,6 +1096,12 @@ function MessageBroadcastCard({ apiToken, phoneNumberId }: { apiToken: string; p
       )}
     </div>
   );
+
+  return asTab ? inner : (
+    <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6 mb-6">
+      {inner}
+    </div>
+  );
 }
 
 /* ═══════════════ LABEL AGENT ASSIGN CARD ═══════════════ */
@@ -1342,7 +1360,6 @@ function DashboardContent() {
         subtitle="Label breakdown and reply volume" color={ORANGE}
         onDownload={() => labelsData && downloadCSV("label-distribution.csv", labelsData.labels)}>
         <LabelManagementCard apiToken={credentials!.apiToken} phoneNumberId={credentials!.phoneNumberId} />
-        <MessageBroadcastCard apiToken={credentials!.apiToken} phoneNumberId={credentials!.phoneNumberId} />
         <LabelAgentAssignCard apiToken={credentials!.apiToken} phoneNumberId={credentials!.phoneNumberId} />
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
           <ChartCard title="Reply Volume" subtitle="User vs TWP messages">
