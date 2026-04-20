@@ -564,7 +564,9 @@ function MessageBroadcastCard({ apiToken, phoneNumberId }: { apiToken: string; p
   const [uploadingMedia, setUploadingMedia] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const [bodyVariableValues, setBodyVariableValues] = useState<string[]>([]);
+  type VarSource = "name" | "phone" | "label" | "static";
+  type VarMapping = { source: VarSource; value: string };
+  const [variableMappings, setVariableMappings] = useState<VarMapping[]>([]);
   const [useCustom, setUseCustom] = useState(false);
   const [confirmed, setConfirmed] = useState(false);
   const [sendResult, setSendResult] = useState<{ total: number; succeeded: number; failed: number; errors: { phone: string; reason: string }[] } | null>(null);
@@ -577,8 +579,6 @@ function MessageBroadcastCard({ apiToken, phoneNumberId }: { apiToken: string; p
   const isVideoTemplate = activeHeaderType === "VIDEO";
   const needsMediaHeader = !!activeHeaderType && ["IMAGE", "VIDEO", "DOCUMENT"].includes(activeHeaderType);
   const templateVars = !useCustom && selectedTemplate?.bodyVariables?.length ? selectedTemplate.bodyVariables : [];
-  const hasNameVariable = templateVars.length > 0;
-  const manualVars = hasNameVariable ? templateVars.slice(1) : templateVars;
 
   function resetMediaState() {
     setSelectedFile(null);
@@ -610,7 +610,8 @@ function MessageBroadcastCard({ apiToken, phoneNumberId }: { apiToken: string; p
     }
   }
 
-  const allVarsFilled = manualVars.length === 0 || (bodyVariableValues.length === manualVars.length && bodyVariableValues.every((v) => !!v.trim()));
+  const allVarsFilled = variableMappings.length === 0 ||
+    variableMappings.every((m) => m.source !== "static" || !!m.value.trim());
 
   const { data: labelListData, isLoading: loadingLabels } = useGetLabelList(
     { apiToken, phoneNumberId },
@@ -650,12 +651,7 @@ function MessageBroadcastCard({ apiToken, phoneNumberId }: { apiToken: string; p
       } else {
         body.templateId = selectedTemplate!.id;
         if (effectiveMediaUrl) body.templateHeaderMediaUrl = effectiveMediaUrl;
-        if (hasNameVariable) {
-          body.autoNameVariable = true;
-          if (bodyVariableValues.length > 0) body.bodyVariables = bodyVariableValues;
-        } else if (bodyVariableValues.length > 0) {
-          body.bodyVariables = bodyVariableValues;
-        }
+        if (variableMappings.length > 0) body.variableMappings = variableMappings;
       }
       const resp = await fetch("/api/templates/send-to-label", {
         method: "POST",
@@ -793,7 +789,10 @@ function MessageBroadcastCard({ apiToken, phoneNumberId }: { apiToken: string; p
                     setSelectedTemplate(t);
                     setUseCustom(false);
                     resetMediaState();
-                    setBodyVariableValues(t?.bodyVariables?.slice(1).map(() => "") ?? []);
+                    setVariableMappings(t?.bodyVariables?.map((_, i) => ({
+                      source: i === 0 ? "name" : "static",
+                      value: "",
+                    } as VarMapping)) ?? []);
                     setSendResult(null);
                     setConfirmed(false);
                   }
@@ -920,40 +919,58 @@ function MessageBroadcastCard({ apiToken, phoneNumberId }: { apiToken: string; p
         </div>
       )}
 
-      {/* Body variable inputs */}
+      {/* Variable mapping — one row per {{N}} */}
       {templateVars.length > 0 && (
         <div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-xl">
-          <p className="text-xs font-medium text-blue-800 mb-2">Template Variables <span className="text-red-500">*</span></p>
-          <div className="space-y-2">
-            {/* {{1}} — auto-filled from subscriber name */}
-            <div className="flex items-center gap-2">
-              <span className="text-xs font-mono text-blue-600 bg-blue-100 rounded px-2 py-1 whitespace-nowrap">{templateVars[0]}</span>
-              <div className="flex-1 flex items-center gap-2 border border-green-300 rounded-lg px-3 py-1.5 bg-green-50">
-                <span className="text-xs text-green-700 font-medium">Auto — subscriber name from label</span>
-                <span className="ml-auto text-green-500"><CheckCircle2 size={12} /></span>
-              </div>
-            </div>
-            {/* Remaining variables — manual input */}
-            {manualVars.map((placeholder, idx) => (
-              <div key={placeholder} className="flex items-center gap-2">
-                <span className="text-xs font-mono text-blue-600 bg-blue-100 rounded px-2 py-1 whitespace-nowrap">{placeholder}</span>
-                <input
-                  type="text"
-                  value={bodyVariableValues[idx] ?? ""}
-                  onChange={(e) => {
-                    const next = [...bodyVariableValues];
-                    next[idx] = e.target.value;
-                    setBodyVariableValues(next);
-                  }}
-                  placeholder={`Value for ${placeholder}`}
-                  className="flex-1 border border-blue-300 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-200 bg-white"
-                />
-              </div>
-            ))}
-          </div>
-          <p className="text-xs text-blue-600 mt-2">
-            {hasNameVariable ? "{{1}} is filled automatically per subscriber. Fill any remaining variables below." : "Fill in all variables — they will be replaced in the message for every recipient."}
+          <p className="text-xs font-medium text-blue-800 mb-2">
+            Map Template Variables <span className="text-red-500">*</span>
+            <span className="ml-1 font-normal text-blue-600">— choose what each placeholder will be filled with per subscriber</span>
           </p>
+          <div className="space-y-2">
+            {templateVars.map((placeholder, idx) => {
+              const mapping = variableMappings[idx] ?? { source: "static", value: "" };
+              return (
+                <div key={placeholder} className="flex items-start gap-2">
+                  <span className="text-xs font-mono text-blue-600 bg-blue-100 rounded px-2 py-1.5 whitespace-nowrap mt-0.5">{placeholder}</span>
+                  <div className="flex-1 flex flex-col gap-1.5">
+                    <select
+                      value={mapping.source}
+                      onChange={(e) => {
+                        const next = [...variableMappings];
+                        next[idx] = { source: e.target.value as VarSource, value: "" };
+                        setVariableMappings(next);
+                      }}
+                      className="border border-blue-300 rounded-lg px-3 py-1.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-200"
+                    >
+                      <option value="name">Subscriber Name</option>
+                      <option value="phone">Phone Number</option>
+                      <option value="label">Label Name</option>
+                      <option value="static">Custom text…</option>
+                    </select>
+                    {mapping.source === "static" && (
+                      <input
+                        type="text"
+                        value={mapping.value}
+                        onChange={(e) => {
+                          const next = [...variableMappings];
+                          next[idx] = { ...next[idx], value: e.target.value };
+                          setVariableMappings(next);
+                        }}
+                        placeholder={`Static value for ${placeholder}`}
+                        className="border border-blue-300 rounded-lg px-3 py-1.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-200"
+                      />
+                    )}
+                    {mapping.source !== "static" && (
+                      <p className="text-xs text-green-700 flex items-center gap-1">
+                        <CheckCircle2 size={10} />
+                        Auto-filled from each subscriber's {mapping.source === "name" ? "name" : mapping.source === "phone" ? "phone number" : "label name"}
+                      </p>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
         </div>
       )}
 
@@ -1325,8 +1342,8 @@ function DashboardContent() {
         subtitle="Label breakdown and reply volume" color={ORANGE}
         onDownload={() => labelsData && downloadCSV("label-distribution.csv", labelsData.labels)}>
         <LabelManagementCard apiToken={credentials!.apiToken} phoneNumberId={credentials!.phoneNumberId} />
-        <LabelAgentAssignCard apiToken={credentials!.apiToken} phoneNumberId={credentials!.phoneNumberId} />
         <MessageBroadcastCard apiToken={credentials!.apiToken} phoneNumberId={credentials!.phoneNumberId} />
+        <LabelAgentAssignCard apiToken={credentials!.apiToken} phoneNumberId={credentials!.phoneNumberId} />
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
           <ChartCard title="Reply Volume" subtitle="User vs TWP messages">
             <div className="h-[230px]">

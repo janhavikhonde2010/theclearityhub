@@ -702,7 +702,7 @@ router.post("/agents/assign-to-label", async (req, res): Promise<void> => {
 });
 
 router.post("/templates/send-to-label", (req, res): void => {
-  const { apiToken, phoneNumberId, labelName, templateId, message, templateHeaderMediaUrl, bodyVariables, autoNameVariable } = req.body as {
+  const { apiToken, phoneNumberId, labelName, templateId, message, templateHeaderMediaUrl, bodyVariables, autoNameVariable, variableMappings } = req.body as {
     apiToken?: string;
     phoneNumberId?: string;
     labelName?: string;
@@ -711,6 +711,7 @@ router.post("/templates/send-to-label", (req, res): void => {
     templateHeaderMediaUrl?: string;
     bodyVariables?: string[];
     autoNameVariable?: boolean;
+    variableMappings?: { source: "name" | "phone" | "label" | "static"; value: string }[];
   };
 
   if (!apiToken || !phoneNumberId || !labelName?.trim()) {
@@ -769,7 +770,16 @@ router.post("/templates/send-to-label", (req, res): void => {
               if (templateHeaderMediaUrl?.trim()) {
                 sendParams.set("template_header_media_url", templateHeaderMediaUrl.trim());
               }
-              if (autoNameVariable) {
+              if (Array.isArray(variableMappings) && variableMappings.length > 0) {
+                variableMappings.forEach((mapping, idx) => {
+                  let resolved = "";
+                  if (mapping.source === "name") resolved = sub.name || sub.phoneNumber;
+                  else if (mapping.source === "phone") resolved = sub.phoneNumber;
+                  else if (mapping.source === "label") resolved = sub.labelName;
+                  else resolved = mapping.value ?? "";
+                  sendParams.set(`body_variable_${idx + 1}`, resolved);
+                });
+              } else if (autoNameVariable) {
                 sendParams.set("body_variable_1", sub.name || sub.phoneNumber);
                 if (Array.isArray(bodyVariables)) {
                   bodyVariables.forEach((val, idx) => sendParams.set(`body_variable_${idx + 2}`, val ?? ""));
